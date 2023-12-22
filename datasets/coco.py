@@ -139,7 +139,8 @@ def make_coco_transforms(image_set):
 
     if image_set == 'val':
         return T.Compose([
-            T.RandomResize([800], max_size=1333),
+            T.RandomResize([224]),
+            T.CenterCrop((224, 224)),
             normalize,
         ])
 
