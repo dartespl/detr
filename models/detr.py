@@ -99,18 +99,11 @@ class DETR2(nn.Module):
         super().__init__()
 
         #mae encoder
-        # self.num_patches = 49#196
-        # self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.num_patches+1, 256),
-        #                               requires_grad=False)  # fixed sin-cos embedding
-        self.image_processor = AutoImageProcessor.from_pretrained("facebook/vit-mae-base")
+        self.num_patches = 49#196
+        self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.num_patches+1, 256),
+                                      requires_grad=False)  # fixed sin-cos embedding
+        # self.image_processor = AutoImageProcessor.from_pretrained("facebook/vit-mae-base")
         self.mae = ViTMAEModel.from_pretrained("facebook/vit-mae-base")
-
-        self.state_dict = torch.hub.load_state_dict_from_url(
-            url="https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth",
-            map_location="cpu",
-            check_hash=True,
-        )
-        self.maepretrained = ViTMAEForPreTraining.from_pretrained("facebook/vit-mae-base")
 
         for param in self.mae.parameters():
             param.requires_grad = False
@@ -192,7 +185,7 @@ class DETR2(nn.Module):
         memory = memory.last_hidden_state
         memory = self.lin_emb(memory)
 
-        hs = self.transformer(memory, None, self.query_embed.weight, None)[0]
+        hs = self.transformer(memory, None, self.query_embed.weight, self.decoder_pos_embed)[0]
 
         outputs_class = self.class_embed(hs)
         outputs_coord = self.bbox_embed(hs).sigmoid()
