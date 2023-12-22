@@ -17,11 +17,6 @@ from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .transformer import build_transformer
 
-from transformers import AutoImageProcessor, ViTMAEModel, ViTMAEForPreTraining
-from PIL import Image
-import requests
-
-from .pos_embed import get_2d_sincos_pos_embed
 
 class DETR(nn.Module):
     """ This is the DETR module that performs object detection """
@@ -68,131 +63,6 @@ class DETR(nn.Module):
         src, mask = features[-1].decompose()
         assert mask is not None
         hs = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])[0]
-
-        outputs_class = self.class_embed(hs)
-        outputs_coord = self.bbox_embed(hs).sigmoid()
-        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
-        if self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
-        return out
-
-    @torch.jit.unused
-    def _set_aux_loss(self, outputs_class, outputs_coord):
-        # this is a workaround to make torchscript happy, as torchscript
-        # doesn't support dictionary with non-homogeneous values, such
-        # as a dict having both a Tensor and a list.
-        return [{'pred_logits': a, 'pred_boxes': b}
-                for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
-
-class DETR2(nn.Module):
-    """ This is the DETR module that performs object detection """
-    def __init__(self, transformer, num_classes, num_queries=100, aux_loss=False):
-        """ Initializes the model.
-        Parameters:
-            backbone: torch module of the backbone to be used. See backbone.py
-            transformer: torch module of the transformer architecture. See transformer.py
-            num_classes: number of object classes
-            num_queries: number of object queries, ie detection slot. This is the maximal number of objects
-                         DETR can detect in a single image. For COCO, we recommend 100 queries.
-            aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
-        """
-        super().__init__()
-
-        #mae encoder
-        # self.num_patches = 49#196
-        # self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.num_patches+1, 256),
-        #                               requires_grad=False)  # fixed sin-cos embedding
-        self.image_processor = AutoImageProcessor.from_pretrained("facebook/vit-mae-base")
-        self.mae = ViTMAEModel.from_pretrained("facebook/vit-mae-base")
-
-        self.state_dict = torch.hub.load_state_dict_from_url(
-            url="https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_vit_base.pth",
-            map_location="cpu",
-            check_hash=True,
-        )
-        self.maepretrained = ViTMAEForPreTraining.from_pretrained("facebook/vit-mae-base")
-
-        for param in self.mae.parameters():
-            param.requires_grad = False
-
-        self.lin_emb = nn.Linear(768, 256)
-
-        #detr decoder
-        #TODO zaladuj wagi detra
-        detr = torch.hub.load('facebookresearch/detr:main', 'detr_resnet50', pretrained=True)
-
-        self.num_queries = num_queries
-        self.transformer = detr.transformer
-
-        for param in self.transformer.parameters():
-            param.requires_grad = False
-
-        hidden_dim = self.transformer.d_model
-        self.class_embed = detr.class_embed
-
-        for param in self.class_embed.parameters():
-            param.requires_grad = False
-
-        self.bbox_embed = detr.bbox_embed
-
-        for param in self.bbox_embed.parameters():
-            param.requires_grad = False
-
-        self.query_embed = detr.query_embed
-
-        for param in self.query_embed.parameters():
-            param.requires_grad = False
-
-        # self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
-        # self.backbone = backbone
-        self.aux_loss = aux_loss
-
-    def initialize_weights(self):
-        pass
-        # initialization
-        # initialize (and freeze) pos_embed by sin-cos embedding
-
-        # decoder_pos_embed = get_2d_sincos_pos_embed(self.decoder_pos_embed.shape[-1],
-        #                                             int(self.patch_embed.num_patches ** .5), cls_token=True)
-        decoder_pos_embed = get_2d_sincos_pos_embed(self.decoder_pos_embed.shape[-1],
-                                                    int(self.num_patches ** .5), cls_token=True)
-        self.decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
-
-        # # initialize patch_embed like nn.Linear (instead of nn.Conv2d)
-        # w = self.patch_embed.proj.weight.data
-        # torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
-        #
-        # # timm's trunc_normal_(std=.02) is effectively normal_(std=0.02) as cutoff is too big (2.)
-        # torch.nn.init.normal_(self.cls_token, std=.02)
-        # torch.nn.init.normal_(self.mask_token, std=.02)
-
-        # initialize nn.Linear and nn.LayerNorm
-        self.apply(self._init_weights)
-
-    def forward(self, samples: NestedTensor):
-        """ The forward expects a NestedTensor, which consists of:
-               - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
-               - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
-
-            It returns a dict with the following elements:
-               - "pred_logits": the classification logits (including no-object) for all queries.
-                                Shape= [batch_size x num_queries x (num_classes + 1)]
-               - "pred_boxes": The normalized boxes coordinates for all queries, represented as
-                               (center_x, center_y, height, width). These values are normalized in [0, 1],
-                               relative to the size of each individual image (disregarding possible padding).
-                               See PostProcess for information on how to retrieve the unnormalized bounding box.
-               - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
-                                dictionnaries containing the two above keys for each decoder layer.
-        """
-        if isinstance(samples, (list, torch.Tensor)):
-            samples = nested_tensor_from_tensor_list(samples)
-
-        # inputs = self.image_processor(images=samples.tensors, return_tensors="pt")
-        memory = self.mae(pixel_values=samples.tensors)
-        memory = memory.last_hidden_state
-        memory = self.lin_emb(memory)
-
-        hs = self.transformer(memory, None, self.query_embed.weight, None)[0]
 
         outputs_class = self.class_embed(hs)
         outputs_coord = self.bbox_embed(hs).sigmoid()
@@ -451,11 +321,15 @@ def build(args):
 
     transformer = build_transformer(args)
 
-    model = DETR2(
+    model = DETR(
+        backbone,
         transformer,
         num_classes=num_classes,
+        num_queries=args.num_queries,
         aux_loss=args.aux_loss,
     )
+    # from models.detrmae import DETRMAE
+    # model = DETRMAE(num_classes)
 
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
