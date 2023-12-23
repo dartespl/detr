@@ -99,7 +99,7 @@ class DETR2(nn.Module):
         super().__init__()
 
         #mae encoder
-        self.num_patches = 49#196
+        self.num_patches = 196
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, self.num_patches+1, 256),
                                       requires_grad=False)  # fixed sin-cos embedding
         # self.image_processor = AutoImageProcessor.from_pretrained("facebook/vit-mae-base")
@@ -113,6 +113,11 @@ class DETR2(nn.Module):
         #detr decoder
         #TODO zaladuj wagi detra
         detr = torch.hub.load('facebookresearch/detr:main', 'detr_resnet50', pretrained=True)
+        pretrained_mae = ViTMAEForPreTraining.from_pretrained("facebook/vit-mae-base")
+        self.mask_token = pretrained_mae.decoder.mask_token
+        self.mask_token.requires_grad = False
+
+        self.lin_mask_token = nn.Linear(512, 256)
 
         self.num_queries = num_queries
         self.transformer = detr.transformer
@@ -162,6 +167,15 @@ class DETR2(nn.Module):
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
 
+    def append_mask_tokens(self, x, ids_restore):
+        # append mask tokens to sequence
+        mask_token_transformed = self.lin_mask_token(self.mask_token)
+        mask_tokens = mask_token_transformed.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
+        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
+        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
+        x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
+        return x
+
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
@@ -181,9 +195,11 @@ class DETR2(nn.Module):
             samples = nested_tensor_from_tensor_list(samples)
 
         # inputs = self.image_processor(images=samples.tensors, return_tensors="pt")
-        memory = self.mae(pixel_values=samples.tensors)
-        memory = memory.last_hidden_state
+        output = self.mae(pixel_values=samples.tensors)
+        memory = output.last_hidden_state
         memory = self.lin_emb(memory)
+
+        memory = self.append_mask_tokens(memory, output.ids_restore)
 
         hs = self.transformer(memory, None, self.query_embed.weight, self.decoder_pos_embed)[0]
 
