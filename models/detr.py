@@ -128,18 +128,18 @@ class DETR2(nn.Module):
         hidden_dim = self.transformer.d_model
         self.class_embed = detr.class_embed
 
-        for param in self.class_embed.parameters():
-            param.requires_grad = False
+        # for param in self.class_embed.parameters():
+        #     param.requires_grad = False
 
         self.bbox_embed = detr.bbox_embed
 
-        for param in self.bbox_embed.parameters():
-            param.requires_grad = False
+        # for param in self.bbox_embed.parameters():
+        #     param.requires_grad = False
 
-        self.query_embed = detr.query_embed
+        self.query_embed = nn.Embedding(num_queries, hidden_dim)
 
-        for param in self.query_embed.parameters():
-            param.requires_grad = False
+        # for param in self.query_embed.parameters():
+        #     param.requires_grad = False
 
         # self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         # self.backbone = backbone
